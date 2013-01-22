@@ -14,6 +14,8 @@ Since it already had a cable, I just plugged it in and figured out the pins.
 That's why pins 0-7 are used weirdly. But you can safely ignore all these
 
 
+I had no "debounce" or the like in my circuit, it was just a 1k (or 10k?)
+pull-down. In the code I would simply wait after registering a button press.
 
 The light shows whether or not the mic is active.
 The button toggles the light on/off, but if you hold it down it will

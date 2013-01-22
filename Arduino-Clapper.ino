@@ -1,210 +1,226 @@
 /*
+*******
+ NOTE: 
+*******
 
-Ethernet-enabled Clapper and other goodies, Version 2
-
-*/
+ */
 #include <SPI.h>
 #include <Ethernet.h>
 
-// Ethernet 
+//easy way to disable the relay for testing.
+const boolean TOGGLE_RELAY = true;
+
+
+//Constants
 byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xEF};
-byte ip[] = {192,168,69,8};
-byte subnet_mask[] = {255,255,255,0};
-byte gateway[] = {192,168,69,1};
-boolean welcomed_new_client = false;
-unsigned int message_length = 0;
-unsigned int message_length_limit = 512; // upper limit is 65535
-char message[512]; // can't use a variable in array length
-char temp_char;
-Server server(23); // port 23
+byte ip[] = {192,168,69, 8};
+byte subnet[] = {255, 255, 255, 0};
+byte gateway[] = {192,168,69, 1};
 
-// mic
-boolean heard_first_clap = false;
-unsigned long clap_time;
-unsigned long single_clap_timeout = 390; //time before resetting after only 1 clap
-unsigned int mic_value;
-unsigned int first_clap_delay = 40; //the pause after getting a clap, to avoid picking up echoes
-unsigned int clap_threshold = 770; //minimum amplitude of a clap. Low values pick up noise
-unsigned int clap_final_delay = 900; //timeout after a clap has happened. this timeout is needed because I don't have a capacitor on the mic amplifier circuit, so it registers two claps after a toggle (one for the LED and one for the relay)
+//mic & light variables
+boolean lightIsOn = false;
+boolean clap_enabled = true; //whether or not the clapper is enabled
+boolean got_first_clap = false;
+unsigned long time; //time of the first clap.
+int mic_value;
+const int mic_delay = 40; //pause after getting a clap
+const int clap_threshold = 780; //720 //minimum amplitude of a clap. lower values picks up noise
+const unsigned long clap_timeout = 390; //time before resetting after only 1 clap
+const int clap_final_delay = 900; //timeout after a clap has happened. this timeout is needed because I don't have a capacitor on the mic amplifier circuit, so it registers two claps after a toggle (one for the LED and one for the relay)
 
-// button
+//button variables
+const unsigned long button_longpress_delay = 790;
 unsigned long button_push_time;
-unsigned long button_longpress_delay = 700;
-unsigned int button_final_delay = 300;
-boolean button_longpress_confirmed = false;
-boolean holding_button = false;  //if button is currently depressed (usually means a long-presss)
+const int button_final_delay = 330;
 
-// program
-boolean light_is_on = false;
-boolean clapper_enabled = true;
-unsigned int final_delay = clap_final_delay;
+//ethernet variables
+const unsigned int CHARLIMIT = 512; //the limit for this value is 65535
+char message[512];
+char tempChar;
+unsigned int numBytes = 0;
+EthernetServer server = EthernetServer(23); // port 23
+boolean gotAMessage = false; // whether or not you got a message from the client yet
 
+//pin related variables
+const int led_p1 = 3;
+const int led_p2 = 4;
+const int button_p1 = 6;
+const int button_p2 = 7;
+const int mic_pin = 16;
+const int pull_down_pin = 5;
+const int relay_pin = 9;
 
-// pins
-int led_pin_1 = 3;
-int led_pin_2 = 4;
-int button_pin_1 = 6;
-int button_pin_2 = 7;
-int mic_pin = 14;
-int pulldown_pin = 5; // TODO: rewire so this isn't needed
-int relay_pin = 9;
-
+//other variables
+int final_delay = 0;
+int toggle_count = 0;
 
 void setup() {
-  // init ethernet and start telnet server
-  Ethernet.begin(mac, ip, gateway, subnet_mask);
-  server.begin();
-  
-  Serial.begin(9600);
-  
-  // set up pins
-  pinMode(button_pin_1, OUTPUT);
-  pinMode(button_pin_2, INPUT);
-  pinMode(led_pin_1, OUTPUT);
-  pinMode(led_pin_2, OUTPUT);
+  //Ethernet shield stuff
+  Ethernet.begin(mac, ip, gateway, subnet);  // initialize the ethernet device
+  server.begin(); // start listening for clients
+  Serial.begin(9600); // open the serial port
+
+  //Light stuff
+  pinMode(button_p1, OUTPUT); //button
+  pinMode(button_p2, INPUT); //button
+  pinMode(led_p1, OUTPUT); //LED
+  pinMode(led_p2, OUTPUT); //LED
   pinMode(relay_pin, OUTPUT);
-  pinMode(pulldown_pin, OUTPUT);
-  digitalWrite(button_pin_1, HIGH);
-  digitalWrite(pulldown_pin, HIGH);
+  digitalWrite(button_p1, HIGH);
+
+  //button pull-down pin. Plz move this to a GND pin
+  pinMode(pull_down_pin, OUTPUT);
+  digitalWrite(pull_down_pin, LOW);
 }
 
 
 void loop() {
-  // handle inputs from the button
-  if ((digitalRead(button_pin_1)) && (holding_button == false)) {
-    holding_button = true;
-    button_push_time = millis(); // save the current time
-    Serial.print("(ButtonPress)");
-  }
+  EthernetClient client = server.available();
   
-  if (holding_button) {
-    if (digitalRead(button_pin_1)) {
-      if ((button_push_time + button_longpress_delay < millis()) && (button_longpress_confirmed == false)) {
-        // If longpress, toggle clapper
-        button_longpress_confirmed = true;
-        clapper_enabled = !clapper_enabled;
-        writeMessage("Clapper toggled by button\r\n");
-      }
-    } else {
-      if (button_longpress_confirmed == false) {
-        // if not longpress, toggle the light
-        light_is_on = !light_is_on;
-        writeMessage("Light toggled by button\r\n");
-      }
-      holding_button = false;
-      button_longpress_confirmed = false;
-      Serial.print("(ButtonRelease)");
-      final_delay = button_final_delay;
-    }
-  }
-  
-  // Telnet client stuff
-  Client client = server.available(); //wait for a client to connect
-  if (client) {  // true when client sends data
-    if (!welcomed_new_client) {
+  if (client) { //true when a client sends data (no way to tell when they connect :(
+    if (!gotAMessage) {
       Serial.println("We have a new client");
-      client.println("Hi there!");
-      welcomed_new_client = true;
+      server.println("Yes, this is ChristmasTree!"); 
+      gotAMessage = true;
     }
-    temp_char = client.read();  // read 1 byte from the client's message
-    if (temp_char == '\n') {
-      writeMessage(message, message_length);
-      writeMessage("\r\n", 2);
-      message_length = 0;
-    } else {
-      if (message_length < message_length_limit) {
-        message[message_length] = temp_char;
-        message_length++;
+
+    tempChar = client.read(); // read the bytes incoming from the client:
+    Serial.print(tempChar);
+
+    //Take actions based on the input
+    switch(tempChar) {
+    case '1':
+      lightIsOn = true;
+      Serial.print("(LightON)");
+      writeMessage("\rChristmasTree ON\n\r", 19);
+      break;
+    case '0':
+      lightIsOn = false;
+      Serial.print("(LightON)");
+      writeMessage("\rChristmasTree OFF\n\r", 20);
+      break;
+    case '{':
+      clap_enabled = true;
+      Serial.print("(ClapperON)");
+      writeMessage("\rMic ON\r\n", 9);
+      break;
+    case '}':
+      clap_enabled = false;
+      Serial.print("(ClapperOFF)");
+      writeMessage("\rMic OFF\r\n", 10);
+      break;
+    case'~':
+      if (lightIsOn) {
+        writeMessage("\rChristmasTree is ON\r\n", 22);
+      } else {
+        writeMessage("\rChristmasTree is OFF\r\n", 23);
+      }
+      if (clap_enabled) {
+        writeMessage("Mic is ON\r\n", 11);
+      } else {
+        writeMessage("Mic is OFF\r\n", 12);
+      }
+      break;
+    case '\n':
+      if (numBytes < CHARLIMIT) {
+        message[numBytes] = '\n';
+        writeMessage(message, numBytes + 1);
+        numBytes = 0;
+      } else {
+        message[numBytes-1] = '\n'; //truncate the last byte
+        writeMessage(message, numBytes);
+        numBytes = 0;
+      }
+      Serial.println("");
+      break;
+    case 8: //backspace
+      Serial.print('<');
+      numBytes--;
+      break;
+    default:
+      if (numBytes < CHARLIMIT) {
+        message[numBytes] = tempChar;
+        numBytes++;
       }
     }
-    
-    // also print message to the serial port
-    switch (temp_char) {
-      case '\b':  // backspace
-        Serial.print('<');
+  } //end of ethernet section
+
+  //toggle by button OR toggle clapper
+  if (digitalRead(button_p2)) {
+    Serial.print("(Button_Press)");
+    button_push_time = millis(); //save the time of the button press
+    while (digitalRead(button_p2)) {
+      if (millis() > button_push_time + button_longpress_delay) {
+        //we just need to wait & see what the user is doing
         break;
-      default:
-        Serial.print(temp_char);
-    }
-    
-    // if the telnet client wants to change the light
-    if (temp_char == '1') {
-      light_is_on = true;
-      message_length--;  // ignore this byte
-      // print a message about this
-      char msg[] = "(LightON)";
-      writeMessage(msg);
-      Serial.print(msg);
-    } 
-    else if (temp_char == '0') {
-      light_is_on = false;
-      message_length--;  // ignore this byte
-      // print a message about this
-      char msg[] = "(LightOFF)";
-      writeMessage(msg);
-      Serial.print(msg);
-    }
-  } //end of ethernet client section
-  
-  // Clapper section
-  if (clapper_enabled) {
-    if (heard_first_clap == false) {
-      // we're listening for the first clap
-      mic_value = analogRead(mic_pin);
-      if (mic_value > clap_threshold) {
-        Serial.print("(Clap1)");
-        delay(first_clap_delay);
-        clap_time = millis();
       }
+    }
+    if (millis() > button_push_time + button_longpress_delay) {
+        //if the user did long press, toggle clapper
+        Serial.print("(Button_Timeout)");
+        clap_enabled = !clap_enabled;
     } else {
-      // we're listening for the second clap
-      if (clap_time + single_clap_timeout < millis()) { // if timeout
-        heard_first_clap = false;
-        Serial.print("(ClapTimeout)");
-      }
-      mic_value = analogRead(mic_pin);
-      if (mic_value > clap_threshold) {
-        light_is_on = !light_is_on;
-        Serial.print("(Clap2)");
-        writeMessage("Light toggled by clap\r\n");
-        final_delay = clap_final_delay;
+      //if the user did not long press, toggle the light
+      lightIsOn = !lightIsOn;
+    }
+    Serial.println("(Button_Release)");
+    final_delay = button_final_delay;
+  }
+
+  //toggle by claps
+  if (clap_enabled) {
+    mic_value = analogRead(mic_pin);
+    if ((got_first_clap == false) && (mic_value > clap_threshold)) { //first clap
+      Serial.print("(CLAP1[");
+      Serial.print(mic_value);
+      Serial.print("])");
+      final_delay = mic_delay;
+      time = millis();
+      got_first_clap = true;
+    } else if (got_first_clap) {
+      if (time+clap_timeout < millis()) { //timeout on the second clap
+        got_first_clap = false;
+      } else { //still within the time window for a second clap
+        if (mic_value > clap_threshold) { //we got a clap!
+          lightIsOn = !lightIsOn;
+          got_first_clap = false;
+          final_delay = clap_final_delay;
+          Serial.print("(CLAP2[");
+          Serial.print(mic_value);
+          Serial.print("])");
+          Serial.print("(");
+          Serial.print(toggle_count++);
+          Serial.print(")");
+        }
       }
     }
   }
-  
-  
-  // ********************************
-  // Update things based on variables
-  if (light_is_on) {
-    digitalWrite(relay_pin, HIGH);
+
+
+//******************************************
+//*************  Update Stuff  *************
+//******************************************
+  if (lightIsOn) { //Update the light
+    //We used to have an indicator light.
+    if (TOGGLE_RELAY) {
+      digitalWrite(relay_pin, HIGH);
+    }
   } else {
     digitalWrite(relay_pin, LOW);
   }
   
-  if (clapper_enabled) {
-    digitalWrite(led_pin_1, HIGH);
+  if (clap_enabled) { //update clap indicator LED
+    digitalWrite(led_p1, HIGH);
   } else {
-    digitalWrite(led_pin_1, LOW);
+    digitalWrite(led_p1, LOW);
   }
-  
-  
-  //delay after doing everything for various reasons, such as:
-  // - lack of smooth power to the mic amp, so it picks up power spikes as a clap
-  // - lack of debounce on the button (may not be a problem anymore)
+
+
+  //delay afterwards so we don't get things like repeat claps or button readings
   delay(final_delay);
   final_delay = 0;
+
 }
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -220,8 +236,13 @@ void writeMessage(char message[]) {
 }
 
 void writeMessage(char message[], unsigned int count) {
-  for (unsigned int i = 0; i < count; i++) {
+  for (int i = 0; i < count; i++) {
     server.write(message[i]);
   }
 }
+
+
+
+
+
 

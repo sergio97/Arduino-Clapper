@@ -1,0 +1,21 @@
+Documentation may not be 100% correct because I built this long before I decided all my code should go on github.
+I apologize in advanced.
+
+
+I used:
+-Arduino Duemilanove
+-Ethernet shield (the one with a microSD slot)
+-A mic with an amp and filter (not discussed here).
+-A relay, switched by some smaller equivalent of a relay.
+-A light & button on a small circuit board that I pulled off the front panel of an old PC
+
+The small panel of lights/buttons came with a ribbon cable.
+Since it already had a cable, I just plugged it in and figured out the pins.
+That's why pins 0-7 are used weirdly. But you can safely ignore all these
+
+
+
+The light shows whether or not the mic is active.
+The button toggles the light on/off, but if you hold it down it will
+instead toggle the mic on/off.
+The relay was connected to pin 9
